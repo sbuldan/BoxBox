@@ -972,6 +972,8 @@ app.registerExtension({
         }
         if (nodeData.name !== "BoxSelector") return;
 
+        nodeType.canvasOnly = true; // Force classic canvas rendering for compatibility with Nodes 2.0
+
         console.log("[BoxBox] Found BoxSelector node! Adding button...");
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
