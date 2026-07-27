@@ -28,18 +28,21 @@ class RegionSelectorNode:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {"image": ("IMAGE",)},
-            "optional": {"box_metadata": ("STRING", {"default": "", "multiline": True})},
+            "required": {
+                "image": ("IMAGE",),
+                "box_metadata": ("STRING", {"default": "{}", "multiline": False}),
+            },
             "hidden": {"unique_id": "UNIQUE_ID"}
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("image", "box_metadata")
+    RETURN_TYPES = ("IMAGE", "MASK", "STRING")
+    RETURN_NAMES = ("image", "mask", "box_metadata")
     FUNCTION = "process_region_selection"
     CATEGORY = "image/region"
     OUTPUT_NODE = True
 
     def process_region_selection(self, image, box_metadata="{}", unique_id=None):
+        print(f"[BoxSelector] Processing node {unique_id} with metadata length: {len(box_metadata)}")
         if box_metadata.strip() and box_metadata != "{}":
             self.last_metadata = box_metadata
 
@@ -57,10 +60,137 @@ class RegionSelectorNode:
             except Exception as e:
                 print(f"[BoxSelector] Warning: failed to save preview: {e}")
 
+        # Generate mask tensor
+        import torch
+        B, H, W, C = image.shape
+        mask_tensor = torch.zeros((B, H, W), dtype=torch.float32)
+
+        try:
+            metadata = json.loads(self.last_metadata)
+            if "maskOps" in metadata and metadata["maskOps"]:
+                mask_img = _generate_mask_from_maskops(metadata, W, H)
+                if mask_img is not None:
+                    mask_arr = np.array(mask_img).astype(np.float32) / 255.0
+                    single_mask = torch.from_numpy(mask_arr)
+                    mask_tensor = single_mask.unsqueeze(0).repeat(B, 1, 1)
+        except Exception as e:
+            print(f"[BoxSelector] Error generating mask from metadata: {e}")
+
         return {
             "ui": {"images": ui_images},
-            "result": (image, self.last_metadata)
+            "result": (image, mask_tensor, self.last_metadata)
         }
+
+
+def _generate_mask_from_maskops(transform: dict, ref_w: int, ref_h: int) -> Image.Image:
+    """Generate a mask from Mask Editor maskOps.
+    Returns an 'L' mode image (ref_w × ref_h) — 0=masked(black), 255=unmasked(white).
+    maskOps format: [{type: 'brush', mode: 'add'|'sub', pts: [{x,y}], r: float}]
+    """
+    import base64
+    import io as _io
+    from PIL import ImageDraw, ImageOps
+    from pathlib import Path
+
+    ops = transform.get("maskOps", [])
+    inverted = bool(transform.get("maskInverted", False))
+    if not ops:
+        return None
+
+    # Start black (nothing selected). Ops paint white (add) or black (sub).
+    mask = Image.new("L", (ref_w, ref_h), 0)
+    draw = ImageDraw.Draw(mask)
+
+    for op in ops:
+        mode   = op.get("mode", "add")
+        otype  = op.get("type", "polygon")
+
+        # ── Fill op: load pre-baked mask from file or dataUrl ──
+        if otype == "fill" and (op.get("maskFile") or op.get("dataUrl")):
+            try:
+                fill_img = None
+                mask_file = op.get("maskFile")
+                if mask_file and isinstance(mask_file, str):
+                    fpath = Path(folder_paths.get_input_directory()) / mask_file
+                    if fpath.exists():
+                        fill_img = Image.open(fpath).convert("L")
+                if fill_img is None and op.get("dataUrl"):
+                    data_url = op["dataUrl"]
+                    header, b64data = data_url.split(",", 1)
+                    img_bytes = base64.b64decode(b64data)
+                    fill_img = Image.open(_io.BytesIO(img_bytes)).convert("L")
+                if fill_img is not None:
+                    fill_img = ImageOps.invert(fill_img)
+                    fill_img = fill_img.resize((ref_w, ref_h), Image.Resampling.BICUBIC)
+                    mask = fill_img
+                    draw = ImageDraw.Draw(mask)
+            except Exception as e:
+                print(f"[BoxSelector] Warning: failed to load fill op mask: {e}")
+            continue
+
+        pts = op.get("pts", [])
+        if not pts:
+            continue
+        fill   = 255 if mode == "add" else 0
+
+        if otype == "brush":
+            import math
+            r_norm = float(op.get("r", 0.01))  # normalised radius relative to image width
+            r_px   = max(1, round(r_norm * ref_w))
+            shape  = op.get("shape", "circle")
+
+            if shape == "square":
+                for i in range(len(pts)):
+                    p = pts[i]
+                    px, py = round(p["x"] * ref_w), round(p["y"] * ref_h)
+                    
+                    # Draw square at point
+                    draw.rectangle([px - r_px, py - r_px, px + r_px, py + r_px], fill=fill)
+                    
+                    # Interpolate to next point
+                    if i < len(pts) - 1:
+                        next_p = pts[i+1]
+                        npx, npy = round(next_p["x"] * ref_w), round(next_p["y"] * ref_h)
+                        
+                        dx = npx - px
+                        dy = npy - py
+                        dist = (dx * dx + dy * dy) ** 0.5
+                        
+                        # Interpolate every 1 pixel or 10% of radius, whichever is smaller
+                        step = max(1.0, r_px * 0.1)
+                        steps = max(1, math.ceil(dist / step))
+                        for j in range(1, steps):
+                            t = j / steps
+                            ix = round(px + dx * t)
+                            iy = round(py + dy * t)
+                            draw.rectangle([ix - r_px, iy - r_px, ix + r_px, iy + r_px], fill=fill)
+            else:
+                for i in range(len(pts)):
+                    p = pts[i]
+                    px, py = round(p["x"] * ref_w), round(p["y"] * ref_h)
+                    # Draw circle at point
+                    bbox = [px - r_px, py - r_px, px + r_px, py + r_px]
+                    draw.ellipse(bbox, fill=fill)
+                    # Draw line to next point
+                    if i < len(pts) - 1:
+                        next_p = pts[i+1]
+                        npx, npy = round(next_p["x"] * ref_w), round(next_p["y"] * ref_h)
+                        draw.line([(px, py), (npx, npy)], fill=fill, width=r_px * 2)
+        elif otype in ("lasso", "polygon", "rect"):
+            if len(pts) < 3:
+                continue
+            poly_px = [(round(p["x"] * ref_w), round(p["y"] * ref_h)) for p in pts]
+            draw.polygon(poly_px, fill=fill)
+        else:
+            if len(pts) < 3:
+                continue
+            poly_px = [(round(p["x"] * ref_w), round(p["y"] * ref_h)) for p in pts]
+            draw.polygon(poly_px, fill=fill)
+
+    if inverted:
+        mask = ImageOps.invert(mask)
+
+    return mask
 
 
 def scale_image_if_needed(filename, type="input", subfolder="", max_size=1024):
