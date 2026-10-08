@@ -6,6 +6,27 @@ import json
 import torch
 
 
+def _to_rgb_and_rgba(img):
+    """img: (B, H, W, C). Returns (RGB with 3 channels, RGBA with 4 channels).
+    RGB drops the alpha channel. RGBA keeps the input alpha;
+    if the input has no alpha, alpha is 1.0 (fully opaque)."""
+    c = img.shape[-1]
+    if c == 1:
+        rgb = img.repeat(1, 1, 1, 3)
+        alpha = torch.ones_like(img)
+    elif c == 2:  # gray + alpha
+        rgb = img[..., :1].repeat(1, 1, 1, 3)
+        alpha = img[..., 1:2]
+    elif c == 3:
+        rgb = img
+        alpha = torch.ones_like(img[..., :1])
+    else:
+        rgb = img[..., :3]
+        alpha = img[..., 3:4]
+    rgba = torch.cat([rgb, alpha], dim=-1)
+    return rgb.contiguous(), rgba.contiguous()
+
+
 class RegionCropNode:
     """
     Nodo che taglia un'immagine usando le coordinate fornite dal RegionSelectorNode.
@@ -36,12 +57,18 @@ class RegionCropNode:
             }
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK")
-    RETURN_NAMES = ("cropped_image", "cropped_mask")
+    RETURN_TYPES = ("IMAGE", "IMAGE", "MASK")
+    RETURN_NAMES = ("cropped_image_RGB", "cropped_image_RGBA", "cropped_mask")
     FUNCTION = "crop_image"
     CATEGORY = "image/region"
 
     def crop_image(self, image, box_metadata, mask=None, fallback_mode="use_full_image"):
+        """Crop, then give the image as RGB (3 channels) and as RGBA (4 channels)."""
+        cropped, cropped_mask = self._crop_core(image, box_metadata, mask, fallback_mode)
+        rgb, rgba = _to_rgb_and_rgba(cropped)
+        return (rgb, rgba, cropped_mask)
+
+    def _crop_core(self, image, box_metadata, mask=None, fallback_mode="use_full_image"):
         """
         Taglia l'immagine secondo le coordinate nel metadata.
 

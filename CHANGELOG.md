@@ -1,5 +1,9 @@
 # Changelog
 
+## [Enhanced v1.3.0] - 2026-10-08 (local change)
+
+- BoxCrop: outputs are now `cropped_image_RGB` (3 channels), `cropped_image_RGBA` (4 channels) and `cropped_mask`. RGB drops alpha. RGBA keeps the input alpha, or uses full alpha when the input has none.
+
 ## [Enhanced v1.2.0] - 2026-10-08 (local change)
 
 - BoxSelector: the box cannot go outside the image when you draw, move or resize it.
