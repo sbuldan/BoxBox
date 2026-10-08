@@ -31,10 +31,6 @@ class RegionSelectorNode:
             "required": {
                 "image": ("IMAGE",),
                 "box_metadata": ("STRING", {"default": "{}", "multiline": False}),
-                "snap_to": ("INT", {
-                    "default": 8, "min": 1, "max": 512, "step": 1,
-                    "tooltip": "Box width and height are made a multiple of this many pixels. 1 = off."
-                }),
             },
             "hidden": {"unique_id": "UNIQUE_ID"}
         }
@@ -45,7 +41,7 @@ class RegionSelectorNode:
     CATEGORY = "image/region"
     OUTPUT_NODE = True
 
-    def process_region_selection(self, image, box_metadata="{}", snap_to=8, unique_id=None):
+    def process_region_selection(self, image, box_metadata="{}", unique_id=None):
         print(f"[BoxSelector] Processing node {unique_id} with metadata length: {len(box_metadata)}")
         if box_metadata.strip() and box_metadata != "{}":
             self.last_metadata = box_metadata
@@ -80,7 +76,7 @@ class RegionSelectorNode:
         except Exception as e:
             print(f"[BoxSelector] Error generating mask from metadata: {e}")
 
-        clean_metadata = _sanitize_box_metadata(self.last_metadata, W, H, snap_to)
+        clean_metadata = _sanitize_box_metadata(self.last_metadata, W, H)
 
         return {
             "ui": {"images": ui_images},
@@ -106,7 +102,7 @@ def _place_inside(center, length, max_length):
     return max(0, min(start, max_length - length))
 
 
-def _sanitize_box_metadata(metadata_str, img_w, img_h, snap):
+def _sanitize_box_metadata(metadata_str, img_w, img_h, snap=None):
     """Convert the box to real image pixels, clamp it to the image,
     and snap width and height to a multiple of `snap`.
     The result has displayScaleFactor = 1 and aspectRatio = "free",
@@ -119,7 +115,13 @@ def _sanitize_box_metadata(metadata_str, img_w, img_h, snap):
     if any(meta.get(k) is None for k in ("x1", "y1", "x2", "y2")):
         return metadata_str
 
-    snap = max(1, int(snap or 1))
+    # Snap size is set in the Select Box dialog and saved in the metadata.
+    if snap is None:
+        try:
+            snap = int(meta.get("snapTo", 16))
+        except (TypeError, ValueError):
+            snap = 16
+    snap = max(1, min(int(snap or 1), 512))
     scale = meta.get("displayScaleFactor", 1.0) or 1.0
     try:
         scale = float(scale)

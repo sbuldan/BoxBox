@@ -1,5 +1,10 @@
 # Changelog
 
+## [Enhanced v1.5.0] - 2026-10-08 (local change)
+
+- Select Box dialog: when you change the aspect ratio and the new box is larger than the image, the box is scaled down to fit inside the image (center kept).
+- Snap size moved from the node into the Select Box dialog ("Snap Size", default 16, 1 = off). The value is remembered and saved in the box data (`snapTo`). The `snap_to` node input is removed.
+
 ## [Enhanced v1.4.0] - 2026-10-08 (local change)
 
 - Fix: the Select Box preview could be drawn squashed (different scale in x and y), so the crop did not match the box you drew. The preview now always keeps the image shape, and x and y are converted with their own scale (`displayScaleX`, `displayScaleY`).

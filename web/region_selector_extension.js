@@ -142,12 +142,28 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
     // ========================================================
     // BOX LIMITS: stay inside the image + snap size to N pixels
     // ========================================================
-    function getSnapStep() {
-        let v = 1;
+    // Snap size lives in the dialog (default 16). Remembered in localStorage;
+    // a box saved earlier keeps its own snap value.
+    const SNAP_DEFAULT = 16;
+    const snapInput = container.querySelector('#snap-to-input');
+    function readSavedSnap() {
         try {
-            if (hooks && typeof hooks.getSnap === 'function') v = parseInt(hooks.getSnap(), 10);
-        } catch (e) { v = 1; }
-        return Number.isFinite(v) && v > 1 ? v : 1;
+            const prev = previousMetadata ? JSON.parse(previousMetadata) : null;
+            if (prev && prev.snapTo !== undefined) return parseInt(prev.snapTo, 10);
+        } catch (e) { /* ignore */ }
+        try {
+            const v = localStorage.getItem('boxSelector_snapTo');
+            if (v !== null) return parseInt(v, 10);
+        } catch (e) { /* ignore */ }
+        return SNAP_DEFAULT;
+    }
+    if (snapInput) {
+        const v0 = readSavedSnap();
+        snapInput.value = String(Number.isFinite(v0) && v0 >= 1 ? v0 : SNAP_DEFAULT);
+    }
+    function getSnapStep() {
+        const v = snapInput ? parseInt(snapInput.value, 10) : SNAP_DEFAULT;
+        return Number.isFinite(v) && v > 1 ? Math.min(v, 512) : 1;
     }
 
     // Display pixels per real image pixel, for each axis.
@@ -434,6 +450,21 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
             adjustRectangleToAspectRatio();
             saveHistoryState();
         }
+    }
+
+    if (snapInput) {
+        snapInput.addEventListener('change', () => {
+            let v = parseInt(snapInput.value, 10);
+            if (!Number.isFinite(v) || v < 1) v = 1;
+            if (v > 512) v = 512;
+            snapInput.value = String(v);
+            try { localStorage.setItem('boxSelector_snapTo', String(v)); } catch (e) { /* ignore */ }
+            if (rectangleExists && currentRectangle) {
+                enforceBoxConstraints('left', 'top');
+                updateAllDimensions();
+                saveHistoryState();
+            }
+        });
     }
 
     // Restore custom inputs
@@ -1041,12 +1072,33 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
     function adjustRectangleToAspectRatio() {
         if (!aspectRatioValue || !rectangleExists || !currentRectangle) return;
 
-        // Keep width, adjust height to ratio
-        baseHeight = baseWidth / aspectRatioValue;
+        const W = backgroundImage.offsetWidth;
+        const H = backgroundImage.offsetHeight;
+        const cx = baseX + baseWidth / 2;
+        const cy = baseY + baseHeight / 2;
 
-        // Update display
-        currentRectangle.style.width = baseWidth + 'px';
-        currentRectangle.style.height = baseHeight + 'px';
+        // Keep width, adjust height to ratio
+        let w = baseWidth;
+        let h = w / aspectRatioValue;
+
+        // If the new box is larger than the image, scale it down to fit
+        if (W > 0 && H > 0 && (w > W || h > H)) {
+            const k = Math.min(W / w, H / h);
+            w *= k;
+            h *= k;
+        }
+
+        // Keep the box center, but stay inside the image
+        let x = cx - w / 2;
+        let y = cy - h / 2;
+        if (W > 0) x = Math.max(0, Math.min(x, W - w));
+        if (H > 0) y = Math.max(0, Math.min(y, H - h));
+
+        currentRectangle.style.left = x + 'px';
+        currentRectangle.style.top = y + 'px';
+        currentRectangle.style.width = w + 'px';
+        currentRectangle.style.height = h + 'px';
+        baseX = x; baseY = y; baseWidth = w; baseHeight = h;
         enforceBoxConstraints('left', 'top');
 
         updateAllDimensions();
@@ -3544,6 +3596,13 @@ async function openRegionDialog(node, app) {
                 </div>
                 <div id="aspect-ratio-hint" class="bs-hint">Constrained to 1:1</div>
 
+                <div class="bs-sec">Snap Size</div>
+                <div class="bs-ar-custom is-open" style="display: flex;">
+                    <input id="snap-to-input" class="bs-ar-input" type="number" min="1" max="512" step="1" value="16" title="Box width and height become a multiple of this value. 1 = off.">
+                    <span class="bs-ar-sep">px</span>
+                </div>
+                <div class="bs-hint">Width and height are multiples of this. 1 = off.</div>
+
                 <div class="bs-sec">Mode</div>
                 <div class="bs-row">
                     <button id="mode-box-btn" type="button" class="bs-btn active-box"><span class="bs-ico" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="0.5" fill="none"/><circle cx="3.5" cy="3.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="12.5" cy="3.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12.5" r="1.2" fill="currentColor" stroke="none"/><circle cx="12.5" cy="12.5" r="1.2" fill="currentColor" stroke="none"/></svg></span>Box</button>
@@ -3828,7 +3887,6 @@ async function openRegionDialog(node, app) {
                 try {
                     selectorApi = window.CanvasSelector.initializeCanvasSelector(container, imageUrl, previousMetadata, {
                         onCancelRequest: requestCancelWithoutSaving,
-                        getSnap: () => node.widgets?.find((w) => w.name === "snap_to")?.value ?? 1,
                     });
                     console.log("[RegionSelectorExt] CanvasSelector initialized successfully");
                     if (pendingMode) {
