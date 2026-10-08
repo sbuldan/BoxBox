@@ -1,5 +1,13 @@
 # Changelog
 
+## [Enhanced v1.2.0] - 2026-10-08 (local change)
+
+- BoxSelector: the box cannot go outside the image when you draw, move or resize it.
+- BoxSelector: new `snap_to` input (default 8, 1 = off). Box width and height become a multiple of this value. The info panel shows the size in real image pixels.
+- BoxSelector `box_metadata` output is now in real image pixels, clamped and snapped (displayScaleFactor = 1, aspectRatio = "free"), so BoxCrop and BoxReinsert use the exact box.
+- Fix: with a locked aspect ratio, the drawn box was saved with the mouse point and not the locked shape.
+
+
 All notable changes to this enhanced version of BoxBox will be documented in this file.
 
 ## [Enhanced v1.1.0] - 2026-02-26

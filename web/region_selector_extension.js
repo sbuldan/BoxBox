@@ -139,6 +139,80 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
     let displayScaleFactor = 1.0;  // Scale factor applied to preview
     let isImageFixed = false;       // True when image has been "fixed"
 
+    // ========================================================
+    // BOX LIMITS: stay inside the image + snap size to N pixels
+    // ========================================================
+    function getSnapStep() {
+        let v = 1;
+        try {
+            if (hooks && typeof hooks.getSnap === 'function') v = parseInt(hooks.getSnap(), 10);
+        } catch (e) { v = 1; }
+        return Number.isFinite(v) && v > 1 ? v : 1;
+    }
+
+    // Display pixels per real image pixel
+    function getTotalScale() {
+        const serverScale = parseFloat(backgroundImage.dataset.scaleFactor || "1");
+        const natW = backgroundImage.naturalWidth || backgroundImage.offsetWidth || 1;
+        const s = serverScale * (backgroundImage.offsetWidth / natW);
+        return Number.isFinite(s) && s > 0 ? s : 1;
+    }
+
+    // Snap a display length so the real length is a multiple of `snap`
+    function snapDisplayLength(len, maxLen, scale, snap) {
+        if (snap <= 1) return Math.min(len, maxLen);
+        const maxMult = Math.floor(maxLen / scale / snap + 0.01) * snap;
+        if (maxMult < snap) return maxLen; // image side smaller than one step
+        let real = Math.round(len / scale / snap) * snap;
+        real = Math.max(snap, Math.min(real, maxMult));
+        return real * scale;
+    }
+
+    // anchorX: 'left' | 'right' — the side that must not move
+    // anchorY: 'top'  | 'bottom'
+    function enforceBoxConstraints(anchorX = 'left', anchorY = 'top') {
+        if (!currentRectangle) return;
+        const W = backgroundImage.offsetWidth;
+        const H = backgroundImage.offsetHeight;
+        if (!(W > 0 && H > 0)) return;
+
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi));
+        let x = parseFloat(currentRectangle.style.left) || 0;
+        let y = parseFloat(currentRectangle.style.top) || 0;
+        let w = Math.max(0, parseFloat(currentRectangle.style.width) || 0);
+        let h = Math.max(0, parseFloat(currentRectangle.style.height) || 0);
+
+        let right = x + w;
+        let bottom = y + h;
+        if (anchorX === 'left') x = clamp(x, 0, W); else right = clamp(right, 0, W);
+        if (anchorY === 'top') y = clamp(y, 0, H); else bottom = clamp(bottom, 0, H);
+        const maxW = anchorX === 'left' ? W - x : right;
+        const maxH = anchorY === 'top' ? H - y : bottom;
+
+        w = Math.min(w, maxW);
+        h = Math.min(h, maxH);
+        if (aspectRatioValue) {
+            h = w / aspectRatioValue;
+            if (h > maxH) { h = maxH; w = h * aspectRatioValue; }
+        }
+
+        const snap = getSnapStep();
+        if (snap > 1 && w > 0 && h > 0) {
+            const scale = getTotalScale();
+            w = snapDisplayLength(w, maxW, scale, snap);
+            h = snapDisplayLength(aspectRatioValue ? w / aspectRatioValue : h, maxH, scale, snap);
+        }
+
+        if (anchorX === 'right') x = right - w;
+        if (anchorY === 'bottom') y = bottom - h;
+
+        currentRectangle.style.left = x + 'px';
+        currentRectangle.style.top = y + 'px';
+        currentRectangle.style.width = w + 'px';
+        currentRectangle.style.height = h + 'px';
+        baseX = x; baseY = y; baseWidth = w; baseHeight = h;
+    }
+
     // Zoom and Pan State
     let mZoom = 1.0;
     let mPanX = 0;
@@ -544,6 +618,7 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
                     currentRectangle.style.height = baseHeight + 'px';
 
                     canvasContainer.appendChild(currentRectangle);
+                    enforceBoxConstraints('left', 'top');
                     rectangleExists = true;
                     canvasContainer.classList.add('drawing-disabled');
                     canvasContainer.style.cursor = 'default';
@@ -632,9 +707,9 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
             let newLeft = mouseX - dragOffsetX;
             let newTop = mouseY - dragOffsetY;
 
-            // Constrain rectangle within canvas
-            const maxLeft = (rect.width / mZoom) - parseFloat(currentRectangle.style.width);
-            const maxTop = (rect.height / mZoom) - parseFloat(currentRectangle.style.height);
+            // Constrain rectangle within the image
+            const maxLeft = Math.max(0, backgroundImage.offsetWidth - parseFloat(currentRectangle.style.width));
+            const maxTop = Math.max(0, backgroundImage.offsetHeight - parseFloat(currentRectangle.style.height));
 
             newLeft = Math.max(0, Math.min(newLeft, maxLeft));
             newTop = Math.max(0, Math.min(newTop, maxTop));
@@ -685,6 +760,14 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
                 currentRectangle.style.height = height + 'px';
             }
 
+            // Fix: with a locked ratio the moving corner is not the mouse point,
+            // so place the box from the start point.
+            if (width < 0) currentRectangle.style.left = (startX - Math.abs(width)) + 'px';
+            else currentRectangle.style.left = startX + 'px';
+            if (height < 0) currentRectangle.style.top = (startY - Math.abs(height)) + 'px';
+            else currentRectangle.style.top = startY + 'px';
+
+            enforceBoxConstraints(width < 0 ? 'right' : 'left', height < 0 ? 'bottom' : 'top');
             updateAllDimensions();
         }
 
@@ -876,6 +959,11 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
                     break;
             }
 
+            enforceBoxConstraints(
+                resizingEdge.includes('left') ? 'right' : 'left',
+                resizingEdge.includes('top') ? 'bottom' : 'top'
+            );
+
             baseX = parseFloat(currentRectangle.style.left);
             baseY = parseFloat(currentRectangle.style.top);
             baseWidth = parseFloat(currentRectangle.style.width);
@@ -890,19 +978,11 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
         let boxChanged = false;
 
         if (isDrawing) {
-            const rect = canvasContainer.getBoundingClientRect();
-            const endX = (e.clientX - rect.left) / mZoom;
-            const endY = (e.clientY - rect.top) / mZoom;
-
-            const x1 = Math.min(startX, endX);
-            const y1 = Math.min(startY, endY);
-            const x2 = Math.max(startX, endX);
-            const y2 = Math.max(startY, endY);
-
-            baseX = x1;
-            baseY = y1;
-            baseWidth = x2 - x1;
-            baseHeight = y2 - y1;
+            // Read the box as drawn (ratio, image borders and snap already applied)
+            baseX = parseFloat(currentRectangle.style.left) || 0;
+            baseY = parseFloat(currentRectangle.style.top) || 0;
+            baseWidth = parseFloat(currentRectangle.style.width) || 0;
+            baseHeight = parseFloat(currentRectangle.style.height) || 0;
 
             rectangleExists = true;
             currentRectangle.classList.add('complete');
@@ -959,6 +1039,7 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
         // Update display
         currentRectangle.style.width = baseWidth + 'px';
         currentRectangle.style.height = baseHeight + 'px';
+        enforceBoxConstraints('left', 'top');
 
         updateAllDimensions();
 
@@ -999,9 +1080,11 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
         const baseX2 = baseX + baseWidth;
         const baseY2 = baseY + baseHeight;
 
-        const w = Math.round(baseWidth);
-        const h = Math.round(baseHeight);
+        const pxScale = getTotalScale();
+        const w = Math.round(baseWidth / pxScale);
+        const h = Math.round(baseHeight / pxScale);
         const ratio = w / h;
+        const snapStep = getSnapStep();
 
         // 🎯 CUSTOM MODE: Calculate approximation
         let aspectRatioDisplay;
@@ -1054,9 +1137,9 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
 
         baseCoordinates.innerHTML = `
             <div class="bs-info-k">Coords</div>
-            ${Math.round(baseX1)},${Math.round(baseY1)} → ${Math.round(baseX2)},${Math.round(baseY2)}
+            ${Math.round(baseX1 / pxScale)},${Math.round(baseY1 / pxScale)} → ${Math.round(baseX2 / pxScale)},${Math.round(baseY2 / pxScale)}
             <div class="bs-info-k" style="margin-top:5px;">Size</div>
-            ${w} × ${h} px
+            ${w} × ${h} px${snapStep > 1 ? ` <span class="bs-info-meta">(snap ${snapStep})</span>` : ''}
             <div style="margin-top:5px;">${aspectRatioDisplay}</div>
         `;
     }
@@ -2418,13 +2501,25 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
 
             // Round to integers using width/height (not independent corners) so
             // locked ratios like 1:1 never become 1024x1023 after Math.round().
-            let rx1 = Math.round(effectiveX1);
-            let ry1 = Math.round(effectiveY1);
-            let rw = Math.max(1, Math.round(Math.abs(effectiveX2 - effectiveX1)));
-            let rh = Math.max(1, Math.round(Math.abs(effectiveY2 - effectiveY1)));
+            const snapStep = getSnapStep();
+            let rx1, ry1, rw, rh;
+            if (snapStep > 1) {
+                // Keep sub-pixel display values; the Python node converts them
+                // to real pixels and snaps them exactly.
+                const r3 = (v) => Math.round(v * 1000) / 1000;
+                rx1 = r3(effectiveX1);
+                ry1 = r3(effectiveY1);
+                rw = r3(Math.abs(effectiveX2 - effectiveX1));
+                rh = r3(Math.abs(effectiveY2 - effectiveY1));
+            } else {
+                rx1 = Math.round(effectiveX1);
+                ry1 = Math.round(effectiveY1);
+                rw = Math.max(1, Math.round(Math.abs(effectiveX2 - effectiveX1)));
+                rh = Math.max(1, Math.round(Math.abs(effectiveY2 - effectiveY1)));
 
-            if (aspectRatioValue !== null && aspectRatioValue > 0) {
-                rh = Math.max(1, Math.round(rw / aspectRatioValue));
+                if (aspectRatioValue !== null && aspectRatioValue > 0) {
+                    rh = Math.max(1, Math.round(rw / aspectRatioValue));
+                }
             }
 
             const rx2 = rx1 + rw;
@@ -2440,6 +2535,7 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
                 borderWidth: currentBorderWidth,
                 borderPosition: borderPosition,
                 displayScaleFactor: totalScale,
+                snapTo: snapStep,
                 aspectRatio: aspectRatioMode === "custom" ? getCustomAspectLabel() : aspectRatioMode,
                 maskOps: mMaskOps,
                 maskInverted: mMaskInverted,
@@ -3722,6 +3818,7 @@ async function openRegionDialog(node, app) {
                 try {
                     selectorApi = window.CanvasSelector.initializeCanvasSelector(container, imageUrl, previousMetadata, {
                         onCancelRequest: requestCancelWithoutSaving,
+                        getSnap: () => node.widgets?.find((w) => w.name === "snap_to")?.value ?? 1,
                     });
                     console.log("[RegionSelectorExt] CanvasSelector initialized successfully");
                     if (pendingMode) {

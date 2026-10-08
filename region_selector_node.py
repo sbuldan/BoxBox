@@ -31,6 +31,10 @@ class RegionSelectorNode:
             "required": {
                 "image": ("IMAGE",),
                 "box_metadata": ("STRING", {"default": "{}", "multiline": False}),
+                "snap_to": ("INT", {
+                    "default": 8, "min": 1, "max": 512, "step": 1,
+                    "tooltip": "Box width and height are made a multiple of this many pixels. 1 = off."
+                }),
             },
             "hidden": {"unique_id": "UNIQUE_ID"}
         }
@@ -41,7 +45,7 @@ class RegionSelectorNode:
     CATEGORY = "image/region"
     OUTPUT_NODE = True
 
-    def process_region_selection(self, image, box_metadata="{}", unique_id=None):
+    def process_region_selection(self, image, box_metadata="{}", snap_to=8, unique_id=None):
         print(f"[BoxSelector] Processing node {unique_id} with metadata length: {len(box_metadata)}")
         if box_metadata.strip() and box_metadata != "{}":
             self.last_metadata = box_metadata
@@ -76,10 +80,82 @@ class RegionSelectorNode:
         except Exception as e:
             print(f"[BoxSelector] Error generating mask from metadata: {e}")
 
+        clean_metadata = _sanitize_box_metadata(self.last_metadata, W, H, snap_to)
+
         return {
             "ui": {"images": ui_images},
-            "result": (image, mask_tensor, self.last_metadata)
+            "result": (image, mask_tensor, clean_metadata)
         }
+
+
+def _snap_length(length, max_length, snap):
+    """Round length to the nearest multiple of snap, inside [snap, max_length]."""
+    if snap <= 1:
+        return max(1, min(int(round(length)), max_length))
+    max_mult = (max_length // snap) * snap
+    if max_mult < snap:
+        # Image side is smaller than one snap step: use the full side.
+        return max_length
+    snapped = int(round(length / snap)) * snap
+    return max(snap, min(snapped, max_mult))
+
+
+def _place_inside(center, length, max_length):
+    """Start position that keeps the box centered but fully inside [0, max_length]."""
+    start = int(round(center - length / 2.0))
+    return max(0, min(start, max_length - length))
+
+
+def _sanitize_box_metadata(metadata_str, img_w, img_h, snap):
+    """Convert the box to real image pixels, clamp it to the image,
+    and snap width and height to a multiple of `snap`.
+    The result has displayScaleFactor = 1 and aspectRatio = "free",
+    so BoxCrop and BoxReinsert use the exact values without changes."""
+    try:
+        meta = json.loads(metadata_str) if metadata_str and metadata_str.strip() else {}
+    except (json.JSONDecodeError, AttributeError):
+        return metadata_str
+
+    if any(meta.get(k) is None for k in ("x1", "y1", "x2", "y2")):
+        return metadata_str
+
+    snap = max(1, int(snap or 1))
+    scale = meta.get("displayScaleFactor", 1.0) or 1.0
+    try:
+        scale = float(scale)
+        x1 = float(meta["x1"]) / scale
+        x2 = float(meta["x2"]) / scale
+        y1 = float(meta["y1"]) / scale
+        y2 = float(meta["y2"]) / scale
+    except (TypeError, ValueError, ZeroDivisionError):
+        return metadata_str
+
+    # 1. Clamp to the image borders.
+    left = max(0.0, min(x1, x2))
+    right = min(float(img_w), max(x1, x2))
+    top = max(0.0, min(y1, y2))
+    bottom = min(float(img_h), max(y1, y2))
+    if right - left < 1 or bottom - top < 1:
+        # Box is fully outside the image: keep the old data, BoxCrop fallback handles it.
+        return metadata_str
+
+    # 2. Snap width and height, keep the box center, stay inside the image.
+    w = _snap_length(right - left, img_w, snap)
+    h = _snap_length(bottom - top, img_h, snap)
+    nx = _place_inside((left + right) / 2.0, w, img_w)
+    ny = _place_inside((top + bottom) / 2.0, h, img_h)
+
+    out = dict(meta)
+    out.update({
+        "x1": nx, "y1": ny, "x2": nx + w, "y2": ny + h,
+        "displayScaleFactor": 1.0,
+        "aspectRatio": "free",
+        "snapTo": snap,
+        "imageWidth": int(img_w),
+        "imageHeight": int(img_h),
+    })
+    print(f"[BoxSelector] Box in image pixels: ({nx}, {ny}) {w}x{h} (snap {snap}, image {img_w}x{img_h})")
+    return json.dumps(out)
 
 
 def _generate_mask_from_maskops(transform: dict, ref_w: int, ref_h: int) -> Image.Image:
