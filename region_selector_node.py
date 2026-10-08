@@ -123,10 +123,14 @@ def _sanitize_box_metadata(metadata_str, img_w, img_h, snap):
     scale = meta.get("displayScaleFactor", 1.0) or 1.0
     try:
         scale = float(scale)
-        x1 = float(meta["x1"]) / scale
-        x2 = float(meta["x2"]) / scale
-        y1 = float(meta["y1"]) / scale
-        y2 = float(meta["y2"]) / scale
+        # Newer front end sends a scale per axis (the preview can be drawn
+        # with different x and y scales). Fall back to the single scale.
+        scale_x = float(meta.get("displayScaleX") or scale)
+        scale_y = float(meta.get("displayScaleY") or scale)
+        x1 = float(meta["x1"]) / scale_x
+        x2 = float(meta["x2"]) / scale_x
+        y1 = float(meta["y1"]) / scale_y
+        y2 = float(meta["y2"]) / scale_y
     except (TypeError, ValueError, ZeroDivisionError):
         return metadata_str
 
@@ -149,6 +153,8 @@ def _sanitize_box_metadata(metadata_str, img_w, img_h, snap):
     out.update({
         "x1": nx, "y1": ny, "x2": nx + w, "y2": ny + h,
         "displayScaleFactor": 1.0,
+        "displayScaleX": 1.0,
+        "displayScaleY": 1.0,
         "aspectRatio": "free",
         "snapTo": snap,
         "imageWidth": int(img_w),

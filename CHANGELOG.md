@@ -1,5 +1,9 @@
 # Changelog
 
+## [Enhanced v1.4.0] - 2026-10-08 (local change)
+
+- Fix: the Select Box preview could be drawn squashed (different scale in x and y), so the crop did not match the box you drew. The preview now always keeps the image shape, and x and y are converted with their own scale (`displayScaleX`, `displayScaleY`).
+
 ## [Enhanced v1.3.0] - 2026-10-08 (local change)
 
 - BoxCrop: outputs are now `cropped_image_RGB` (3 channels), `cropped_image_RGBA` (4 channels) and `cropped_mask`. RGB drops alpha. RGBA keeps the input alpha, or uses full alpha when the input has none.

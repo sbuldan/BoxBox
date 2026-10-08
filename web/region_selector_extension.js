@@ -150,13 +150,20 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
         return Number.isFinite(v) && v > 1 ? v : 1;
     }
 
-    // Display pixels per real image pixel
-    function getTotalScale() {
+    // Display pixels per real image pixel, for each axis.
+    // The preview can be drawn with a different scale in x and y,
+    // so x and y are converted separately.
+    function getAxisScales() {
         const serverScale = parseFloat(backgroundImage.dataset.scaleFactor || "1");
         const natW = backgroundImage.naturalWidth || backgroundImage.offsetWidth || 1;
-        const s = serverScale * (backgroundImage.offsetWidth / natW);
-        return Number.isFinite(s) && s > 0 ? s : 1;
+        const natH = backgroundImage.naturalHeight || backgroundImage.offsetHeight || 1;
+        let sx = serverScale * (backgroundImage.offsetWidth / natW);
+        let sy = serverScale * (backgroundImage.offsetHeight / natH);
+        if (!(Number.isFinite(sx) && sx > 0)) sx = 1;
+        if (!(Number.isFinite(sy) && sy > 0)) sy = sx;
+        return { sx, sy };
     }
+    function getTotalScale() { return getAxisScales().sx; }
 
     // Snap a display length so the real length is a multiple of `snap`
     function snapDisplayLength(len, maxLen, scale, snap) {
@@ -198,9 +205,9 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
 
         const snap = getSnapStep();
         if (snap > 1 && w > 0 && h > 0) {
-            const scale = getTotalScale();
-            w = snapDisplayLength(w, maxW, scale, snap);
-            h = snapDisplayLength(aspectRatioValue ? w / aspectRatioValue : h, maxH, scale, snap);
+            const { sx, sy } = getAxisScales();
+            w = snapDisplayLength(w, maxW, sx, snap);
+            h = snapDisplayLength(aspectRatioValue ? w / aspectRatioValue : h, maxH, sy, snap);
         }
 
         if (anchorX === 'right') x = right - w;
@@ -493,13 +500,17 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
         const maxDim = 1024;
 
         const maxCurrent = Math.max(naturalW, naturalH);
+        if (!(naturalW > 0 && naturalH > 0)) return;
 
-        if (maxCurrent <= maxDim) {
-            console.log("[FixImage] Image is already small enough, no scaling needed");
-            return;
-        }
-
-        displayScaleFactor = maxDim / maxCurrent;
+        // Fit inside the visible canvas area with ONE scale for both axes,
+        // so the preview is never squashed and never cut off.
+        const area = container.querySelector('.bs-canvas-area');
+        const availW = area ? area.clientWidth * 0.95 : naturalW;
+        const availH = area ? area.clientHeight * 0.95 : naturalH;
+        displayScaleFactor = Math.min(1, maxDim / maxCurrent,
+            availW > 0 ? availW / naturalW : 1,
+            availH > 0 ? availH / naturalH : 1);
+        backgroundImage.style.flexShrink = '0';
         const newW = Math.round(naturalW * displayScaleFactor);
         const newH = Math.round(naturalH * displayScaleFactor);
 
@@ -562,14 +573,11 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
 
         console.log(`[FixImage] Image size: ${naturalW}x${naturalH}, max: ${maxDim}`);
 
-        if (maxDim > 1024) {
-            console.log('[FixImage] Large image detected, creating button and auto-fixing scale...');
-            createFixImageButton();
-            // Apply scale automatically
-            setTimeout(() => {
-                fixImageScale();
-            }, 100);
-        }
+        // Always fit the preview (keeps the correct shape for every size)
+        if (maxDim > 1024) createFixImageButton();
+        setTimeout(() => {
+            fixImageScale();
+        }, 100);
     }, 500);
 
     // Restore previous selection if metadata exists
@@ -1080,9 +1088,9 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
         const baseX2 = baseX + baseWidth;
         const baseY2 = baseY + baseHeight;
 
-        const pxScale = getTotalScale();
-        const w = Math.round(baseWidth / pxScale);
-        const h = Math.round(baseHeight / pxScale);
+        const { sx: pxScaleX, sy: pxScaleY } = getAxisScales();
+        const w = Math.round(baseWidth / pxScaleX);
+        const h = Math.round(baseHeight / pxScaleY);
         const ratio = w / h;
         const snapStep = getSnapStep();
 
@@ -1137,7 +1145,7 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
 
         baseCoordinates.innerHTML = `
             <div class="bs-info-k">Coords</div>
-            ${Math.round(baseX1 / pxScale)},${Math.round(baseY1 / pxScale)} → ${Math.round(baseX2 / pxScale)},${Math.round(baseY2 / pxScale)}
+            ${Math.round(baseX1 / pxScaleX)},${Math.round(baseY1 / pxScaleY)} → ${Math.round(baseX2 / pxScaleX)},${Math.round(baseY2 / pxScaleY)}
             <div class="bs-info-k" style="margin-top:5px;">Size</div>
             ${w} × ${h} px${snapStep > 1 ? ` <span class="bs-info-meta">(snap ${snapStep})</span>` : ''}
             <div style="margin-top:5px;">${aspectRatioDisplay}</div>
@@ -2535,6 +2543,8 @@ function initializeCanvasSelector(container, imageUrl, previousMetadata = null, 
                 borderWidth: currentBorderWidth,
                 borderPosition: borderPosition,
                 displayScaleFactor: totalScale,
+                displayScaleX: getAxisScales().sx,
+                displayScaleY: getAxisScales().sy,
                 snapTo: snapStep,
                 aspectRatio: aspectRatioMode === "custom" ? getCustomAspectLabel() : aspectRatioMode,
                 maskOps: mMaskOps,
